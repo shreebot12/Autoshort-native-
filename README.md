@@ -4,14 +4,15 @@ AutoShorts is a native Android app for turning long videos and audio recordings 
 
 ## Features
 
-- Import device videos and audio through Android's system file picker.
+- Import one or multiple device video and audio files through Android's system file picker. An optional validated YouTube video URL can be attached to a single selected file as a reference; editing always uses the authorized local file, and the app does not download YouTube streams.
 - Transcribe source audio with Deepgram Nova-2 and detect/rank clip moments with DeepSeek, Claude, Gemini, OpenAI, or an OpenAI-compatible endpoint.
 - Review, select, preview, and trim candidates with persistent per-project history.
+- Create and export manually timed clips without AI credentials; exports show a copyright review warning.
 - Export selected clips as 1080 x 1920 MP4 files to `Movies/AutoShorts` and share them with Android apps.
 - Store API keys in Android EncryptedSharedPreferences.
-- Track pipeline progress and export status on device.
+- Run analysis as a unique WorkManager job per project and track pipeline progress and export status on device.
 
-Analysis sends extracted audio to Deepgram and transcript text to the selected AI provider. Configure keys in the app's Settings tab before running analysis. Supported input formats depend on Android's media decoders and the selected file provider. Local Ollama/Whisper execution and desktop-only YouTube download/license checks are not part of this Android build.
+Analysis sends extracted audio to Deepgram and transcript text to the selected AI provider. Configure keys in the app's Settings tab before running analysis. Manual clip creation and export work without those keys, but transcription and automatic moment ranking are not yet API-free. WorkManager jobs restart analysis from the beginning after interruption; audio is still extracted as one full file, so this is not yet a reliable 10-hour pipeline. Supported input formats depend on Android's media decoders and the selected file provider. Local Ollama/Whisper execution and desktop-only YouTube download/license checks are not part of this Android build.
 
 ## Build In GitHub Codespaces
 

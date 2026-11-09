@@ -96,6 +96,7 @@ import com.jaywebtech.autoshorts.AppViewModel
 import com.jaywebtech.autoshorts.data.CandidateEntity
 import com.jaywebtech.autoshorts.data.LlmProvider
 import com.jaywebtech.autoshorts.data.ProjectEntity
+import com.jaywebtech.autoshorts.data.YouTubeUrlValidator
 import java.util.Locale
 
 private enum class HomeTab(val label: String) {
@@ -114,8 +115,19 @@ fun AutoShortsApp(viewModel: AppViewModel) {
     val message by viewModel.message.collectAsState()
     var tab by rememberSaveable { mutableStateOf(HomeTab.STUDIO) }
     var previewPosition by remember { mutableStateOf<Long?>(null) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { viewModel.importMedia(it) { previewPosition = null } }
+    var pendingYoutubeUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) {
+            pendingYoutubeUrl = null
+        } else {
+            val sourceUrl = pendingYoutubeUrl
+            pendingYoutubeUrl = null
+            if (sourceUrl != null && uris.size != 1) {
+                viewModel.showMessage("Choose one local file when attaching a YouTube reference.")
+            } else {
+                viewModel.importMedia(uris, sourceUrl) { previewPosition = null }
+            }
+        }
     }
 
     Scaffold(
@@ -159,6 +171,8 @@ fun AutoShortsApp(viewModel: AppViewModel) {
                     onPreview = { previewPosition = it },
                     onBack = viewModel::closeProject,
                     onAnalyze = viewModel::analyze,
+                    onCancelAnalysis = viewModel::cancelAnalysis,
+                    onCreateManualClip = viewModel::addManualClip,
                     onRename = viewModel::renameProject,
                     onSelect = viewModel::setSelected,
                     onEdit = viewModel::updateCandidate,
@@ -170,7 +184,16 @@ fun AutoShortsApp(viewModel: AppViewModel) {
                     projects = projects,
                     history = tab == HomeTab.HISTORY,
                     onOpen = viewModel::openProject,
-                    onImport = { picker.launch(arrayOf("video/*", "audio/*")) },
+                    onImport = { input ->
+                        val trimmed = input.trim()
+                        val sourceUrl = trimmed.takeIf(String::isNotEmpty)?.let(YouTubeUrlValidator::normalize)
+                        if (trimmed.isNotEmpty() && sourceUrl == null) {
+                            viewModel.showMessage("Enter a supported YouTube video URL, or leave it blank.")
+                        } else {
+                            pendingYoutubeUrl = sourceUrl
+                            picker.launch(arrayOf("video/*", "audio/*"))
+                        }
+                    },
                     onDelete = viewModel::delete,
                 )
             }
@@ -183,9 +206,10 @@ private fun ProjectListScreen(
     projects: List<ProjectEntity>,
     history: Boolean,
     onOpen: (String) -> Unit,
-    onImport: () -> Unit,
+    onImport: (String) -> Unit,
     onDelete: (ProjectEntity) -> Unit,
 ) {
+    var youtubeUrl by rememberSaveable(history) { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 18.dp),
@@ -206,8 +230,19 @@ private fun ProjectListScreen(
         Column(Modifier.padding(horizontal = 22.dp)) {
             Text(if (history) "RECENT WORK" else "MAKE THE FIRST CUT", fontSize = 11.sp, color = MutedInk, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             Spacer(Modifier.height(9.dp))
+            if (!history) {
+                OutlinedTextField(
+                    value = youtubeUrl,
+                    onValueChange = { youtubeUrl = it },
+                    label = { Text("YouTube video URL (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("A local, authorized media file is still required for editing.", fontSize = 12.sp, color = MutedInk)
+                Spacer(Modifier.height(9.dp))
+            }
             Button(
-                onClick = onImport,
+                onClick = { onImport(youtubeUrl) },
                 modifier = Modifier.fillMaxWidth().height(54.dp),
                 shape = RoundedCornerShape(8.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Ink),
@@ -286,6 +321,8 @@ private fun ProjectScreen(
     onPreview: (Long) -> Unit,
     onBack: () -> Unit,
     onAnalyze: () -> Unit,
+    onCancelAnalysis: () -> Unit,
+    onCreateManualClip: (Long, Long, String) -> Unit,
     onRename: (String, String) -> Unit,
     onSelect: (CandidateEntity, Boolean) -> Unit,
     onEdit: (CandidateEntity) -> Unit,
@@ -293,6 +330,14 @@ private fun ProjectScreen(
     onShare: (Uri, String) -> Unit,
 ) {
     var renameDialog by rememberSaveable(project.id) { mutableStateOf(false) }
+    var manualClipDialog by rememberSaveable(project.id) { mutableStateOf(false) }
+    var manualClipTitle by rememberSaveable(project.id) { mutableStateOf("") }
+    var manualStartSeconds by rememberSaveable(project.id) { mutableStateOf("0") }
+    var manualEndSeconds by rememberSaveable(project.id) {
+        mutableStateOf((minOf(project.durationMs, 30_000L) / 1000.0).toString())
+    }
+    var manualClipError by rememberSaveable(project.id) { mutableStateOf<String?>(null) }
+    var pendingExportCandidate by remember { mutableStateOf<CandidateEntity?>(null) }
     var projectName by remember(project.id, project.name) { mutableStateOf(project.name) }
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -315,23 +360,51 @@ private fun ProjectScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 VideoPreview(Uri.parse(project.sourceUri), previewPosition)
             }
+            project.youtubeUrl?.let { sourceUrl ->
+                Spacer(Modifier.height(9.dp))
+                Text("YouTube reference", fontSize = 11.sp, color = MutedInk, fontWeight = FontWeight.Bold)
+                Text(sourceUrl, fontSize = 12.sp, color = MutedInk, maxLines = 2)
+            }
             Spacer(Modifier.height(15.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Moment finder", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Text(if (candidates.isEmpty()) "Transcribe and rank the strongest moments" else "${candidates.size} moments ranked for review", color = MutedInk, fontSize = 13.sp)
                 }
-                Button(onClick = onAnalyze, enabled = !busy, shape = RoundedCornerShape(8.dp), colors = ButtonDefaults.buttonColors(containerColor = Ink)) {
+                Button(
+                    onClick = onAnalyze,
+                    enabled = !busy && project.status != "Processing",
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Ink),
+                ) {
                     Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Leaf)
                     Spacer(Modifier.width(7.dp))
-                    Text(if (busy) "Working" else if (candidates.isEmpty()) "Analyze" else "Run again")
+                    Text(if (busy || project.status == "Processing") "Working" else if (candidates.isEmpty()) "Analyze" else "Run again")
                 }
             }
             if (busy || project.status == "Processing") {
                 Spacer(Modifier.height(14.dp))
                 val percent = liveProgress?.percent ?: project.progress
                 LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.fillMaxWidth())
-                Text("${liveProgress?.stage ?: project.stage}  ·  $percent%", color = MutedInk, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${liveProgress?.stage ?: project.stage}  ·  $percent%",
+                        color = MutedInk,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (busy) TextButton(onClick = onCancelAnalysis) { Text("Cancel") }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = { manualClipDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(7.dp))
+                Text("Create clip manually")
             }
             Spacer(Modifier.height(17.dp))
             candidates.forEach { candidate ->
@@ -342,7 +415,7 @@ private fun ProjectScreen(
                     onToggle = { onSelect(candidate, it) },
                     onEdit = onEdit,
                     onPreview = { onPreview(candidate.startMs) },
-                    onExport = { onExport(candidate) },
+                    onExport = { pendingExportCandidate = candidate },
                     onShare = onShare,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -369,6 +442,76 @@ private fun ProjectScreen(
                 }) { Text("Save") }
             },
             dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("Cancel") } },
+        )
+    }
+    if (manualClipDialog) {
+        AlertDialog(
+            onDismissRequest = { manualClipDialog = false },
+            title = { Text("Create clip manually") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = manualClipTitle,
+                        onValueChange = { manualClipTitle = it; manualClipError = null },
+                        label = { Text("Clip title") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = manualStartSeconds,
+                        onValueChange = { manualStartSeconds = it; manualClipError = null },
+                        label = { Text("Start time in seconds") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = manualEndSeconds,
+                        onValueChange = { manualEndSeconds = it; manualClipError = null },
+                        label = { Text("End time in seconds") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                    )
+                    manualClipError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val start = manualStartSeconds.toDoubleOrNull()
+                    val end = manualEndSeconds.toDoubleOrNull()
+                    val sourceDurationSeconds = project.durationMs / 1000.0
+                    when {
+                        manualClipTitle.isBlank() -> manualClipError = "Enter a title for this clip."
+                        start == null || end == null || !start.isFinite() || !end.isFinite() ||
+                            start < 0 || end <= start || end * 1000 > project.durationMs || end > sourceDurationSeconds -> {
+                            manualClipError = "Choose a valid range within the source duration."
+                        }
+                        else -> {
+                            onCreateManualClip((start * 1000).toLong(), (end * 1000).toLong(), manualClipTitle)
+                            manualClipDialog = false
+                        }
+                    }
+                }) { Text("Create clip") }
+            },
+            dismissButton = { TextButton(onClick = { manualClipDialog = false }) { Text("Cancel") } },
+        )
+    }
+    pendingExportCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { pendingExportCandidate = null },
+            title = { Text("Copyright review") },
+            text = {
+                Text(
+                    "No number of seconds guarantees copyright safety. Cropping, zooming, speed changes, or subtitles do not remove copyright. Use original, licensed, public-domain, or otherwise authorized material. Automated checks cannot guarantee that a claim or strike will not occur; copyright risk is separate from YouTube reused-content monetization rules.",
+                    fontSize = 14.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onExport(candidate)
+                    pendingExportCandidate = null
+                }) { Text("Continue export") }
+            },
+            dismissButton = { TextButton(onClick = { pendingExportCandidate = null }) { Text("Cancel") } },
         )
     }
 }
@@ -425,7 +568,14 @@ private fun CandidateCard(
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
-                    Text("MOMENT ${candidate.rank.toString().padStart(2, '0')}  ·  ${(candidate.score * 100).toInt()}%", color = MutedInk, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 0.6.sp)
+                    Text(
+                        if (candidate.source == "Manual") "MANUAL CLIP  ·  NO AI SCORE"
+                        else "MOMENT ${candidate.rank.toString().padStart(2, '0')}  ·  ${(candidate.score * 100).toInt()}%",
+                        color = MutedInk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        letterSpacing = 0.6.sp,
+                    )
                     Spacer(Modifier.height(6.dp))
                     Text(candidate.hook, fontWeight = FontWeight.Bold, fontSize = 16.sp, lineHeight = 20.sp)
                 }

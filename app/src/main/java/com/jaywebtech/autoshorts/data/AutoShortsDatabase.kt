@@ -10,6 +10,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -47,6 +49,12 @@ interface AutoShortsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCandidates(candidates: List<CandidateEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCandidate(candidate: CandidateEntity)
+
+    @Query("SELECT COALESCE(MAX(rank), 0) FROM candidates WHERE projectId = :projectId")
+    suspend fun maxCandidateRank(projectId: String): Int
+
     @Update
     suspend fun updateCandidate(candidate: CandidateEntity)
 
@@ -59,13 +67,25 @@ interface AutoShortsDao {
 
 @Database(
     entities = [ProjectEntity::class, TranscriptEntity::class, CandidateEntity::class],
-    version = 1,
+    version = 3,
     exportSchema = false,
 )
 abstract class AutoShortsDatabase : RoomDatabase() {
     abstract fun dao(): AutoShortsDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE projects ADD COLUMN youtubeUrl TEXT")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE candidates ADD COLUMN source TEXT NOT NULL DEFAULT 'AI'")
+            }
+        }
+
         @Volatile
         private var instance: AutoShortsDatabase? = null
 
@@ -74,7 +94,7 @@ abstract class AutoShortsDatabase : RoomDatabase() {
                 context.applicationContext,
                 AutoShortsDatabase::class.java,
                 "autoshorts.db",
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
     }
 }

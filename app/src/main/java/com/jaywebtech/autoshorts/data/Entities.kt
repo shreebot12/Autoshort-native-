@@ -1,6 +1,7 @@
 package com.jaywebtech.autoshorts.data
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -16,6 +17,7 @@ data class ProjectEntity(
     val stage: String = "Ready to analyze",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val youtubeUrl: String? = null,
 )
 
 @Entity(
@@ -59,4 +61,5 @@ data class CandidateEntity(
     val renderStatus: String = "Not exported",
     val outputUri: String? = null,
     val captionUri: String? = null,
+    @ColumnInfo(defaultValue = "'AI'") val source: String = "AI",
 )

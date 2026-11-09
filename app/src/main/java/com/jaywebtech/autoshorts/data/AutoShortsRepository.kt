@@ -8,6 +8,8 @@ import androidx.media3.common.util.UnstableApi
 import com.jaywebtech.autoshorts.media.AndroidMediaEngine
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -30,7 +32,7 @@ class AutoShortsRepository(context: Context) {
     fun observeProject(id: String): Flow<ProjectEntity?> = dao.observeProject(id)
     fun observeCandidates(id: String): Flow<List<CandidateEntity>> = dao.observeCandidates(id)
 
-    suspend fun importMedia(uri: Uri): ProjectEntity = withContext(Dispatchers.IO) {
+    suspend fun importMedia(uri: Uri, youtubeUrl: String? = null): ProjectEntity = withContext(Dispatchers.IO) {
         runCatching {
             appContext.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
@@ -44,8 +46,30 @@ class AutoShortsRepository(context: Context) {
             id = UUID.randomUUID().toString(),
             name = name,
             sourceUri = uri.toString(),
+            youtubeUrl = youtubeUrl,
             durationMs = duration,
         ).also { dao.insertProject(it) }
+    }
+
+    suspend fun addManualCandidate(projectId: String, startMs: Long, endMs: Long, title: String): CandidateEntity {
+        val project = dao.getProject(projectId) ?: error("Project not found.")
+        require(startMs >= 0 && endMs > startMs && endMs <= project.durationMs) {
+            "Choose a clip range within the source duration."
+        }
+        val cleanTitle = title.trim()
+        require(cleanTitle.isNotBlank()) { "Enter a title for this clip." }
+        return CandidateEntity(
+            id = UUID.randomUUID().toString(),
+            projectId = projectId,
+            startMs = startMs,
+            endMs = endMs,
+            score = 0.0,
+            hook = cleanTitle,
+            rationale = "Created manually. No AI engagement estimate is available.",
+            rank = dao.maxCandidateRank(projectId) + 1,
+            selected = true,
+            source = "Manual",
+        ).also { dao.insertCandidate(it) }
     }
 
     suspend fun analyze(projectId: String, onStage: (String, Int) -> Unit) {
@@ -86,8 +110,16 @@ class AutoShortsRepository(context: Context) {
             dao.replaceCandidates(projectId, candidates)
             updateStage(project, "Ready to review", 100, onStage)
         } catch (error: Throwable) {
-            val latest = dao.getProject(projectId) ?: project
-            dao.updateProject(latest.copy(status = "Needs attention", stage = error.message ?: "Analysis failed", updatedAt = System.currentTimeMillis()))
+            withContext(NonCancellable) {
+                val latest = dao.getProject(projectId) ?: project
+                dao.updateProject(
+                    latest.copy(
+                        status = if (error is CancellationException) "Cancelled" else "Needs attention",
+                        stage = if (error is CancellationException) "Analysis cancelled" else error.message ?: "Analysis failed",
+                        updatedAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
             throw error
         }
     }
