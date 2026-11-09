@@ -8,7 +8,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import androidx.work.getWorkInfosForUniqueWorkFlow
 import androidx.work.workDataOf
 import com.jaywebtech.autoshorts.data.AutoShortsRepository
 import com.jaywebtech.autoshorts.data.CandidateEntity
